@@ -1,0 +1,6 @@
+{
+  "name": "PES - Personal Execution System",
+  "description": "Unified commitment execution platform featuring DropList rapid cognitive offloading, The Line AI sorting & orchestration bin, The Stuck Feature diagnostic rerouting, PES V2 Tree/BPMN architecture compiler, and a universal AI assistant agent.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

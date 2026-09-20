@@ -1,0 +1,79 @@
+{
+  "entities": {
+    "CommitmentCard": {
+      "title": "CommitmentCard",
+      "description": "Primary four-pillar commitment lifecycle cards",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "level": { "type": "string" },
+        "current_state_desc": { "type": "string" },
+        "desired_state_desc": { "type": "string" },
+        "proof_of_completion": { "type": "string" },
+        "next_physical_action": { "type": "string" },
+        "state": { "type": "string" },
+        "schedule_status": { "type": "string" },
+        "planned_date": { "type": "string" },
+        "planned_start": { "type": "string" },
+        "planned_end": { "type": "string" },
+        "planned_duration": { "type": "number" },
+        "actual_start": { "type": "string" },
+        "actual_end": { "type": "string" },
+        "result": { "type": "string" },
+        "proof_location": { "type": "string" },
+        "owner": { "type": "string" },
+        "priority": { "type": "number" },
+        "risk_level": { "type": "string" },
+        "created_at": { "type": "string" },
+        "updated_at": { "type": "string" }
+      },
+      "required": ["id", "name", "state"]
+    },
+    "InboxItem": {
+      "title": "InboxItem",
+      "description": "Incoming raw ideas and unbuffered notes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "number" },
+        "raw_text": { "type": "string" },
+        "mark": { "type": "string" },
+        "timestamp": { "type": "string" }
+      },
+      "required": ["id", "raw_text", "timestamp"]
+    },
+    "MeetingItinerary": {
+      "title": "MeetingItinerary",
+      "description": "Meeting Itinerary Protocol entries with posture and strategic exit plans",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "startTime": { "type": "string" },
+        "endTime": { "type": "string" },
+        "organizer": { "type": "string" },
+        "purpose": { "type": "string" },
+        "posture": { "type": "string" },
+        "plannedExitMinutes": { "type": "number" },
+        "exitExcuse": { "type": "string" },
+        "notes": { "type": "string" },
+        "created_at": { "type": "string" }
+      },
+      "required": ["id", "title", "startTime", "endTime", "posture"]
+    }
+  },
+  "firestore": {
+    "/commitments/{cardId}": {
+      "schema": "CommitmentCard",
+      "description": "Persistent commitment cards"
+    },
+    "/inbox/{inboxId}": {
+      "schema": "InboxItem",
+      "description": "Raw inbox entries"
+    },
+    "/itineraries/{itineraryId}": {
+      "schema": "MeetingItinerary",
+      "description": "Meeting Itinerary Protocol records"
+    }
+  }
+}
