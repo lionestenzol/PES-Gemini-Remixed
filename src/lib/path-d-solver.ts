@@ -142,7 +142,7 @@ export class PathDSolver {
       }
 
       // Sort occupied
-      occupied.sort((a, b) => a.start - b.end);
+      occupied.sort((a, b) => a.start - b.start);
       days.push({ date: dateStr, dayIndex: d, occupied });
     }
 
@@ -275,7 +275,7 @@ export class PathDSolver {
         end: slot.end,
         label: `[${card.id}] ${card.name}`,
       });
-      slot.day.occupied.sort((a, b) => a.start - b.end);
+      slot.day.occupied.sort((a, b) => a.start - b.start);
 
       const block: ProposedBlock = {
         card_id: card.id,
