@@ -34,7 +34,7 @@ import { TransitionModal } from './components/TransitionModal.js';
 import { NewCardModal } from './components/NewCardModal.js';
 import { MeetingItineraryProtocolView } from './components/MeetingItineraryProtocolView.js';
 import { saveCardToFirestore, clearAllFirestoreData } from './lib/firestore-service.js';
-import { AlertCircle, X, Bot, Zap } from 'lucide-react';
+import { AlertCircle, AlertTriangle, X, Bot, Zap } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<ActiveTab>('paper-first');
@@ -64,14 +64,21 @@ export const App: React.FC = () => {
   const [isNewCardOpen, setIsNewCardOpen] = useState(false);
   const [isSplitView, setIsSplitView] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
+  // Resources currently showing local demo data because the API was unreachable or
+  // returned an error, rather than real server state. Recomputed on every refreshAll.
+  const [fallbackResources, setFallbackResources] = useState<string[]>([]);
 
   // Universal Agent & The Stuck Feature states
   const [isAgentDrawerOpen, setIsAgentDrawerOpen] = useState(false);
   const [isStuckModalOpen, setIsStuckModalOpen] = useState(false);
   const [stuckInitialText, setStuckInitialText] = useState('');
 
-  // Sync state from server/engine
+  // Sync state from server/engine. Any resource whose API call fails or returns a
+  // non-OK response falls back to the local demo-seeded engine instance; `fallen`
+  // collects which ones did, so that's visible instead of silently swapped in.
   const refreshAll = useCallback(async () => {
+    const fallen: string[] = [];
+
     try {
       // Attempt API fetch
       const res = await fetch('/v1/commitments');
@@ -79,9 +86,11 @@ export const App: React.FC = () => {
         const json = await res.json();
         setCards(json.data);
       } else {
+        fallen.push('Commitments');
         setCards(globalPesEngine.getCards());
       }
     } catch {
+      fallen.push('Commitments');
       setCards(globalPesEngine.getCards());
     }
 
@@ -91,9 +100,11 @@ export const App: React.FC = () => {
         const json = await res.json();
         setInbox(json.data);
       } else {
+        fallen.push('Inbox');
         setInbox(globalPesEngine.getInbox());
       }
     } catch {
+      fallen.push('Inbox');
       setInbox(globalPesEngine.getInbox());
     }
 
@@ -104,9 +115,11 @@ export const App: React.FC = () => {
         const json = await res.json();
         setCapacity(json.data);
       } else {
+        fallen.push('Capacity');
         setCapacity(globalPesEngine.getCapacity(thisWeek));
       }
     } catch {
+      fallen.push('Capacity');
       setCapacity(globalPesEngine.getCapacity(getMondayOfWeek()));
     }
 
@@ -116,9 +129,11 @@ export const App: React.FC = () => {
         const json = await res.json();
         setProofs(json.data);
       } else {
+        fallen.push('Proof Ledger');
         setProofs(globalPesEngine.getProofIndex());
       }
     } catch {
+      fallen.push('Proof Ledger');
       setProofs(globalPesEngine.getProofIndex());
     }
 
@@ -128,11 +143,15 @@ export const App: React.FC = () => {
         const json = await res.json();
         setLogs(json.data);
       } else {
+        fallen.push('Audit Log');
         setLogs(globalPesEngine.getLogs());
       }
     } catch {
+      fallen.push('Audit Log');
       setLogs(globalPesEngine.getLogs());
     }
+
+    setFallbackResources(fallen);
   }, []);
 
   useEffect(() => {
@@ -609,6 +628,28 @@ export const App: React.FC = () => {
           onBlock={(card) => handleInitiateTransition(card, 'Blocked')}
           onViewCard={(card) => setSelectedCard(card)}
         />
+      )}
+
+      {/* Demo-Data Fallback Banner: shown whenever a resource couldn't be loaded from the
+          API and is showing local seed data instead of real server state. */}
+      {fallbackResources.length > 0 && (
+        <div className="bg-amber-500 text-amber-950 px-4 py-2.5 text-xs font-medium shadow-xs">
+          <div className="max-w-7xl mx-auto flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>
+                API unreachable for: {fallbackResources.join(', ')}. Showing local demo data,
+                not live server state.
+              </span>
+            </div>
+            <button
+              onClick={() => setFallbackResources([])}
+              className="p-1 hover:bg-amber-600 rounded transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
       )}
 
       {/* Error Notification Banner */}
