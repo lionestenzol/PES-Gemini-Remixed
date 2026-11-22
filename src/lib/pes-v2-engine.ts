@@ -775,7 +775,62 @@ export class PesV2Engine {
 
     this.intakeRecord = record;
     this.addTelemetryLog('INTAKE_PARSED', 'INTAKE', `Parsed raw intent into validated record ${id}`);
+
+    if (trimmed) {
+      this.listItems = this.deriveListItems(trimmed);
+      this.addTelemetryLog(
+        'LIST_DERIVED',
+        'INTAKE',
+        `Derived ${this.listItems.length} list item(s) from raw intent ${id}`
+      );
+    }
+
     return record;
+  }
+
+  private deriveListItems(rawInput: string): V2ListItem[] {
+    const PREREQUISITE = /\b(need|needs|require|requires|obtain|gather|collect|buy|book|order|before)\b/i;
+    const OUTPUT = /\b(deliver|produce|send|submit|publish|report|document)\b/i;
+    const RESOURCE = /\b(tool|tools|material|materials|part|parts|gear|budget|access|account|licence|license|key)\b/i;
+    // "fix the gate, done when it latches" -> item is the work, requiredOutput is the proof
+    const DONE_CLAUSE = /\s*[,.]?\s*\b(?:done when|done means|proof(?: is)?|so that)\b[:\s]+(.+)$/i;
+
+    const units = rawInput
+      .split(/\r?\n|;|\s+then\s+|,\s+and\s+|(?<=\.)\s+(?=[A-Z])/i)
+      .map((part) => part.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
+      .filter((part) => part.length > 2);
+
+    const seen = new Set<string>();
+    const items: V2ListItem[] = [];
+
+    for (const unit of units) {
+      const doneMatch = unit.match(DONE_CLAUSE);
+      const text = (doneMatch ? unit.slice(0, doneMatch.index) : unit).trim().replace(/[.;,]+$/, '');
+      if (text.length < 3) continue;
+
+      const key = text.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const order = items.length + 1;
+      items.push({
+        id: `L-${String(order).padStart(2, '0')}`,
+        order,
+        item: text,
+        type: PREREQUISITE.test(text)
+          ? 'Prerequisite'
+          : OUTPUT.test(text)
+            ? 'Output'
+            : RESOURCE.test(text)
+              ? 'Resource'
+              : 'Action',
+        requiredOutput: doneMatch
+          ? doneMatch[1].trim().replace(/[.;,]+$/, '')
+          : 'Undefined — state what proves this is done',
+      });
+    }
+
+    return items;
   }
 
   // --- COMPARTMENT 2: KNOWLEDGE & RESOURCES ---
