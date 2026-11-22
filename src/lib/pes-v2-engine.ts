@@ -806,6 +806,13 @@ export class PesV2Engine {
         'INTAKE',
         `Built dependency graph for ${this.dependencyNodes.length} ticket(s); ${readyCount} ready, ${this.dependencyNodes.length - readyCount} blocked`
       );
+
+      this.bpmnElements = this.deriveBpmnElements(this.dependencyNodes);
+      this.addTelemetryLog(
+        'BPMN_DERIVED',
+        'INTAKE',
+        `Routed ${this.dependencyNodes.length} ticket(s) into ${this.bpmnElements.length} BPMN element(s)`
+      );
     }
 
     return record;
@@ -970,6 +977,100 @@ export class PesV2Engine {
         parallelGroup: sourceItem ? groupTitleByType.get(sourceItem.type) : undefined,
       };
     });
+  }
+
+  // BPMN flow derived from the dependency graph: a fan-out (>1 unlocks) becomes a Parallel
+  // split gateway, a fan-in (>1 prerequisites) becomes a Parallel join gateway, and plain
+  // one-to-one edges stay a direct sequence flow. No exclusive gateways or exception/retry
+  // routing are invented here: the structural graph carries no real failure-condition data.
+  private deriveBpmnElements(dependencyNodes: V2DependencyNode[]): V2BpmnElement[] {
+    if (dependencyNodes.length === 0) return [];
+
+    const START_ID = 'BPMN-START';
+    const END_ID = 'BPMN-END';
+    const byId = new Map(dependencyNodes.map((n) => [n.id, n]));
+
+    const joinGatewayId = (nodeId: string): string | null => {
+      const node = byId.get(nodeId);
+      return node && node.prerequisites.length > 1 ? `BG-JOIN-${nodeId}` : null;
+    };
+    const targetFor = (nodeId: string): string => joinGatewayId(nodeId) ?? nodeId;
+
+    const elements: V2BpmnElement[] = [];
+
+    // Join gateways: one per node with more than one prerequisite, feeding into that node's task.
+    dependencyNodes.forEach((node) => {
+      const gatewayId = joinGatewayId(node.id);
+      if (gatewayId) {
+        elements.push({
+          id: gatewayId,
+          type: 'Gateway',
+          gatewayType: 'Parallel',
+          label: `Join before ${node.id}: requires all of ${node.prerequisites.join(', ')}`,
+          next: [node.id],
+        });
+      }
+    });
+
+    // Task nodes, one per dependency node. unlocks.length === 0 is wired to the End below.
+    dependencyNodes.forEach((node) => {
+      const next =
+        node.unlocks.length === 0
+          ? []
+          : node.unlocks.length === 1
+            ? [targetFor(node.unlocks[0])]
+            : [`BG-SPLIT-${node.id}`];
+      elements.push({ id: node.id, type: 'Task', label: node.title, next });
+    });
+
+    // Split gateways: one per node with more than one unlock, fanning out to each successor.
+    dependencyNodes
+      .filter((node) => node.unlocks.length > 1)
+      .forEach((node) => {
+        elements.push({
+          id: `BG-SPLIT-${node.id}`,
+          type: 'Gateway',
+          gatewayType: 'Parallel',
+          label: `Split after ${node.id}: ${node.unlocks.join(', ')} run independently`,
+          next: node.unlocks.map((unlockedId) => targetFor(unlockedId)),
+        });
+      });
+
+    // Wire terminal tasks (no unlocks) to the End event, joining first if more than one.
+    const terminalIds = dependencyNodes.filter((node) => node.unlocks.length === 0).map((node) => node.id);
+    const endTarget = terminalIds.length > 1 ? 'BG-JOIN-END' : END_ID;
+    if (terminalIds.length > 1) {
+      elements.push({
+        id: 'BG-JOIN-END',
+        type: 'Gateway',
+        gatewayType: 'Parallel',
+        label: `Join before completion: requires all of ${terminalIds.join(', ')}`,
+        next: [END_ID],
+      });
+    }
+    terminalIds.forEach((id) => {
+      const task = elements.find((el) => el.id === id);
+      if (task) task.next = [endTarget];
+    });
+
+    // Wire the Start event to root tasks (no prerequisites), fanning out if more than one.
+    const rootIds = dependencyNodes.filter((node) => node.prerequisites.length === 0).map((node) => node.id);
+    const startNext = rootIds.length > 1 ? ['BG-SPLIT-START'] : [targetFor(rootIds[0])];
+    if (rootIds.length > 1) {
+      elements.push({
+        id: 'BG-SPLIT-START',
+        type: 'Gateway',
+        gatewayType: 'Parallel',
+        label: `Split at start: ${rootIds.join(', ')} are all immediately ready`,
+        next: rootIds.map((id) => targetFor(id)),
+      });
+    }
+
+    return [
+      { id: START_ID, type: 'StartEvent', label: 'Intent Validated', next: startNext },
+      ...elements,
+      { id: END_ID, type: 'EndEvent', label: 'All derived tickets complete', next: [] },
+    ];
   }
 
   // --- COMPARTMENT 2: KNOWLEDGE & RESOURCES ---
