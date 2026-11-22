@@ -1,0 +1,16 @@
+node_modules/
+dist/
+
+# this project's lockfile is bun.lock
+package-lock.json
+
+.env
+.env.local
+.env.*.local
+
+*.log
+npm-debug.log*
+
+.DS_Store
+.vscode/
+.idea/
