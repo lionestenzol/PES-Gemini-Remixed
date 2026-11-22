@@ -783,6 +783,14 @@ export class PesV2Engine {
         'INTAKE',
         `Derived ${this.listItems.length} list item(s) from raw intent ${id}`
       );
+
+      this.treeNodes = this.deriveTreeNodes(this.listItems, trimmed);
+      const groupCount = this.treeNodes[0]?.children?.length ?? 0;
+      this.addTelemetryLog(
+        'TREE_DERIVED',
+        'INTAKE',
+        `Decomposed ${this.listItems.length} list item(s) into ${groupCount} group(s)`
+      );
     }
 
     return record;
@@ -831,6 +839,48 @@ export class PesV2Engine {
     }
 
     return items;
+  }
+
+  private deriveTreeNodes(listItems: V2ListItem[], goal: string): V2TreeNode[] {
+    if (listItems.length === 0) return [];
+
+    // Execution order, not alphabetical: what must hold, what it needs, the work, what ships.
+    const GROUPS: { type: V2ListItem['type']; title: string; description: string }[] = [
+      { type: 'Prerequisite', title: 'Prerequisites', description: 'Must hold before the work can start' },
+      { type: 'Resource', title: 'Resources', description: 'Needed on hand to do the work' },
+      { type: 'Action', title: 'Actions', description: 'The work itself' },
+      { type: 'Output', title: 'Outputs', description: 'What leaves your hands when it is done' },
+    ];
+
+    const children: V2TreeNode[] = [];
+    for (const group of GROUPS) {
+      const members = listItems.filter((item) => item.type === group.type);
+      if (members.length === 0) continue;
+      children.push({
+        id: `TR-${group.type.toUpperCase()}`,
+        title: group.title,
+        description: group.description,
+        level: 1,
+        // leaf id is the list item id, so a derived ticket of the same id links back here
+        children: members.map((member) => ({
+          id: member.id,
+          title: member.item,
+          description: member.requiredOutput,
+          level: 2,
+        })),
+      });
+    }
+
+    const headline = goal.replace(/\s+/g, ' ').trim();
+    return [
+      {
+        id: 'TR-ROOT',
+        title: headline.length > 80 ? `${headline.slice(0, 77)}...` : headline,
+        description: `${listItems.length} item(s) in ${children.length} group(s), derived from the intake text`,
+        level: 0,
+        children,
+      },
+    ];
   }
 
   // --- COMPARTMENT 2: KNOWLEDGE & RESOURCES ---
