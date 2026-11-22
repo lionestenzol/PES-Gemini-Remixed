@@ -791,6 +791,13 @@ export class PesV2Engine {
         'INTAKE',
         `Decomposed ${this.listItems.length} list item(s) into ${groupCount} group(s)`
       );
+
+      this.tickets = this.deriveTickets(this.listItems);
+      this.addTelemetryLog(
+        'TICKETS_DERIVED',
+        'INTAKE',
+        `Packaged ${this.tickets.length} ticket(s) from derived list item(s)`
+      );
     }
 
     return record;
@@ -841,19 +848,20 @@ export class PesV2Engine {
     return items;
   }
 
+  // Execution order, not alphabetical: what must hold, what it needs, the work, what ships.
+  // Shared by deriveTreeNodes (grouping) and deriveTickets (dependency wiring).
+  private readonly STRUCTURAL_GROUPS: { type: V2ListItem['type']; title: string; description: string }[] = [
+    { type: 'Prerequisite', title: 'Prerequisites', description: 'Must hold before the work can start' },
+    { type: 'Resource', title: 'Resources', description: 'Needed on hand to do the work' },
+    { type: 'Action', title: 'Actions', description: 'The work itself' },
+    { type: 'Output', title: 'Outputs', description: 'What leaves your hands when it is done' },
+  ];
+
   private deriveTreeNodes(listItems: V2ListItem[], goal: string): V2TreeNode[] {
     if (listItems.length === 0) return [];
 
-    // Execution order, not alphabetical: what must hold, what it needs, the work, what ships.
-    const GROUPS: { type: V2ListItem['type']; title: string; description: string }[] = [
-      { type: 'Prerequisite', title: 'Prerequisites', description: 'Must hold before the work can start' },
-      { type: 'Resource', title: 'Resources', description: 'Needed on hand to do the work' },
-      { type: 'Action', title: 'Actions', description: 'The work itself' },
-      { type: 'Output', title: 'Outputs', description: 'What leaves your hands when it is done' },
-    ];
-
     const children: V2TreeNode[] = [];
-    for (const group of GROUPS) {
+    for (const group of this.STRUCTURAL_GROUPS) {
       const members = listItems.filter((item) => item.type === group.type);
       if (members.length === 0) continue;
       children.push({
@@ -881,6 +889,51 @@ export class PesV2Engine {
         children,
       },
     ];
+  }
+
+  private deriveTickets(listItems: V2ListItem[]): V2Ticket[] {
+    if (listItems.length === 0) return [];
+
+    const HUMAN = /\b(approve|review|decide|sign[- ]?off|negotiate|interview|hire|call|meet|discuss|ask|confirm|authorize)\b/i;
+    const TOOL = /\b(run|execute|deploy|script|migrate|automate|install|configure|provision|build)\b/i;
+    const SYSTEM = /\b(sync|process|generate|compute|calculate|monitor|trigger|dispatch|schedule)\b/i;
+
+    const classifyExecutor = (item: V2ListItem): V2Ticket['executorClass'] => {
+      if (HUMAN.test(item.item)) return 'Human';
+      if (TOOL.test(item.item)) return 'Tool';
+      if (SYSTEM.test(item.item)) return 'System';
+      // No executor verb found in the text: default by item type rather than invent one.
+      if (item.type === 'Prerequisite' || item.type === 'Resource') return 'Human';
+      if (item.type === 'Output') return 'Human';
+      return 'AI';
+    };
+
+    // Everything in an earlier group is a dependency of everything in a later group,
+    // mirroring the same Prerequisite -> Resource -> Action -> Output order used for the tree.
+    const idsByGroupIndex: string[][] = this.STRUCTURAL_GROUPS.map((group) =>
+      listItems.filter((item) => item.type === group.type).map((item) => item.id)
+    );
+
+    return listItems.map((item) => {
+      const groupIndex = this.STRUCTURAL_GROUPS.findIndex((group) => group.type === item.type);
+      const dependencies = idsByGroupIndex.slice(0, groupIndex).flat();
+
+      return {
+        id: item.id,
+        title: item.item,
+        workDescription: `[${item.type}] ${item.item}`,
+        inputs: {},
+        requirements: [],
+        dependencies,
+        destination: 'Unassigned — no destination system named in intake',
+        executorClass: classifyExecutor(item),
+        expectedResult: item.requiredOutput,
+        proofRequirements: item.requiredOutput,
+        lifecycleState: 'Created',
+        telemetry: [`[${new Date().toLocaleTimeString()}] Ticket packaged from derived list item ${item.id}`],
+        createdAt: new Date().toISOString(),
+      };
+    });
   }
 
   // --- COMPARTMENT 2: KNOWLEDGE & RESOURCES ---
