@@ -1,11 +1,8 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { V2BpmnElement, V2Ticket } from '../types.js';
 import {
   GitBranch,
   Play,
-  CheckCircle2,
-  AlertTriangle,
-  RotateCcw,
   Flag,
   Cpu,
   User,
@@ -14,7 +11,7 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize2,
-  Sparkles,
+  ArrowRight,
 } from 'lucide-react';
 
 interface VisualBpmnDiagramProps {
@@ -22,6 +19,77 @@ interface VisualBpmnDiagramProps {
   tickets: V2Ticket[];
   onSelectElement?: (elementId: string) => void;
 }
+
+// Longest-path layering via DFS from the Start event, so every element lands one column
+// to the right of its furthest predecessor. A derived (acyclic) graph lays out the same
+// way Kahn's algorithm would; the seeded demo data additionally has a real back-edge
+// (its troubleshooting loop re-enters an earlier task), which plain indegree-based
+// layering can't terminate on. The `onStack` guard stops recursion the instant a node
+// would revisit one of its own ancestors, so that back-edge is rendered (via the node's
+// own "next" label and the inspector footer) but doesn't pull the rest of the graph
+// into an unresolved cycle.
+function layoutColumns(elements: V2BpmnElement[]): V2BpmnElement[][] {
+  if (elements.length === 0) return [];
+
+  const byId = new Map(elements.map((el) => [el.id, el]));
+  const level = new Map<string, number>();
+  const onStack = new Set<string>();
+
+  const visit = (id: string, depth: number) => {
+    const current = level.get(id);
+    if (current !== undefined && depth <= current) return;
+    if (onStack.has(id)) return; // back-edge into an ancestor: stop here, don't recurse forever
+    onStack.add(id);
+    level.set(id, depth);
+    byId.get(id)?.next.forEach((n) => {
+      if (byId.has(n)) visit(n, depth + 1);
+    });
+    onStack.delete(id);
+  };
+
+  const starts = elements.filter((el) => el.type === 'StartEvent');
+  const roots = starts.length > 0 ? starts : elements.filter((el) => !elements.some((other) => other.next.includes(el.id)));
+  roots.forEach((root) => visit(root.id, 0));
+
+  // Anything never reached (disconnected from every Start) still needs a column.
+  elements.forEach((el) => {
+    if (!level.has(el.id)) level.set(el.id, 0);
+  });
+
+  const maxLevel = Math.max(...Array.from(level.values()));
+  const columns: V2BpmnElement[][] = Array.from({ length: maxLevel + 1 }, () => []);
+  elements.forEach((el) => columns[level.get(el.id) ?? 0].push(el));
+  return columns;
+}
+
+const executorBadge = (ticket: V2Ticket) => {
+  switch (ticket.executorClass) {
+    case 'Human':
+      return (
+        <span className="flex items-center gap-1 text-amber-400">
+          <User className="w-2.5 h-2.5" /> Human
+        </span>
+      );
+    case 'AI':
+      return (
+        <span className="flex items-center gap-1 text-cyan-400">
+          <Bot className="w-2.5 h-2.5" /> AI
+        </span>
+      );
+    case 'System':
+      return (
+        <span className="flex items-center gap-1 text-purple-400">
+          <Cpu className="w-2.5 h-2.5" /> System
+        </span>
+      );
+    case 'Tool':
+      return (
+        <span className="flex items-center gap-1 text-blue-400">
+          <Wrench className="w-2.5 h-2.5" /> Tool
+        </span>
+      );
+  }
+};
 
 export const VisualBpmnDiagram: React.FC<VisualBpmnDiagramProps> = ({
   bpmnElements,
@@ -31,10 +99,22 @@ export const VisualBpmnDiagram: React.FC<VisualBpmnDiagramProps> = ({
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
   const [zoomLevel, setZoomLevel] = useState<number>(1);
 
-  const getTicketForBpmn = (label: string): V2Ticket | undefined => {
-    const match = label.match(/T-\d+/);
-    if (!match) return undefined;
-    return tickets.find((t) => t.id === match[0]);
+  const columns = useMemo(() => layoutColumns(bpmnElements), [bpmnElements]);
+
+  // Derived elements reuse the ticket id directly; older seed data embeds it in the label
+  // instead (e.g. "T-101: Apply Partition Tables" on an element whose own id is "B-02").
+  const getTicketForElement = (el: V2BpmnElement): V2Ticket | undefined => {
+    const direct = tickets.find((t) => t.id === el.id);
+    if (direct) return direct;
+    const match = el.label.match(/[A-Z]+-\d+/);
+    return match ? tickets.find((t) => t.id === match[0]) : undefined;
+  };
+
+  const selectedElement = bpmnElements.find((b) => b.id === selectedElementId);
+
+  const handleSelect = (id: string) => {
+    setSelectedElementId(id);
+    onSelectElement?.(id);
   };
 
   return (
@@ -46,13 +126,13 @@ export const VisualBpmnDiagram: React.FC<VisualBpmnDiagramProps> = ({
             <GitBranch className="w-3.5 h-3.5" /> BPMN 2.0 PROCESS FLOW
           </span>
           <span className="text-slate-400 text-[11px]">
-            Standard Operational Routing & Exception Gateways
+            Derived Operational Routing & Decision Gateways
           </span>
         </div>
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setZoomLevel((z) => Math.max(0.7, Number((z - 0.1).toFixed(1))))}
+            onClick={() => setZoomLevel((z) => Math.max(0.6, Number((z - 0.1).toFixed(1))))}
             className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
             title="Zoom Out"
           >
@@ -76,278 +156,179 @@ export const VisualBpmnDiagram: React.FC<VisualBpmnDiagramProps> = ({
         </div>
       </div>
 
-      {/* BPMN SVG & Node Layout Canvas */}
-      <div className="p-8 overflow-x-auto min-h-[440px] flex justify-center items-center bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]">
-        <div
-          style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'center center' }}
-          className="transition-transform duration-200 flex flex-col items-center select-none"
-        >
-          {/* Legend Banner */}
-          <div className="flex items-center gap-4 text-[10px] font-mono text-slate-400 mb-6 bg-slate-950/60 px-3 py-1.5 rounded-full border border-slate-800">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" /> Start Event
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2 rounded-xs bg-indigo-500 inline-block" /> Activity Task
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rotate-45 bg-amber-500 inline-block" /> Gateway (XOR)
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full border-2 border-purple-400 inline-block" /> End Event
-            </span>
+      {/* BPMN Node Layout Canvas */}
+      <div className="p-8 overflow-x-auto min-h-[440px] bg-[radial-gradient(#1e293b_1px,transparent_1px)] [background-size:16px_16px]">
+        {bpmnElements.length === 0 ? (
+          <div className="flex items-center justify-center h-full min-h-[360px] text-xs text-slate-500">
+            No BPMN routing derived yet.
           </div>
-
-          {/* BPMN Main Sequence Pipeline */}
-          <div className="flex items-center gap-6 relative">
-            {/* 1. START EVENT (B-01) */}
-            <div className="flex flex-col items-center">
-              <div
-                onClick={() => setSelectedElementId('B-01')}
-                className={`w-14 h-14 rounded-full border-2 border-emerald-400 bg-emerald-950/60 flex items-center justify-center cursor-pointer transition-all shadow-md ${
-                  selectedElementId === 'B-01' ? 'ring-4 ring-emerald-400/40 scale-105' : 'hover:scale-105'
-                }`}
-                title="Start Event: Intent Validated"
-              >
-                <Play className="w-5 h-5 text-emerald-400 fill-emerald-400 ml-0.5" />
-              </div>
-              <span className="text-[10px] font-mono text-emerald-300 font-semibold mt-2 text-center w-20">
-                Start: Validated
+        ) : (
+          <div
+            style={{ transform: `scale(${zoomLevel})`, transformOrigin: 'top left' }}
+            className="transition-transform duration-200 flex flex-col select-none"
+          >
+            {/* Legend Banner */}
+            <div className="flex items-center gap-4 text-[10px] font-mono text-slate-400 mb-6 bg-slate-950/60 px-3 py-1.5 rounded-full border border-slate-800 self-start">
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" /> Start Event
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2 rounded-xs bg-indigo-500 inline-block" /> Activity Task
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rotate-45 bg-amber-500 inline-block" /> Gateway (AND/XOR)
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full border-2 border-purple-400 inline-block" /> End Event
               </span>
             </div>
 
-            {/* Sequence Flow Connector Arrow */}
-            <div className="w-8 h-0.5 bg-slate-500 relative flex items-center justify-end">
-              <div className="w-2 h-2 border-t-2 border-r-2 border-slate-400 rotate-45 -mr-1" />
-            </div>
+            <div className="flex items-start gap-8">
+              {columns.map((column, colIdx) => (
+                <React.Fragment key={colIdx}>
+                  <div className="flex flex-col gap-5 items-center">
+                    {column.map((el) => {
+                      const ticket = getTicketForElement(el);
+                      const isSelected = selectedElementId === el.id;
 
-            {/* 2. TASK: T-101 (B-02) */}
-            <div className="flex flex-col items-center">
-              <div
-                onClick={() => setSelectedElementId('B-02')}
-                className={`w-40 p-3 rounded-lg border-2 transition-all cursor-pointer shadow-md bg-slate-800/90 ${
-                  selectedElementId === 'B-02'
-                    ? 'border-indigo-400 ring-2 ring-indigo-500/40'
-                    : 'border-indigo-500/50 hover:border-indigo-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[9px] font-mono text-indigo-400 font-bold">B-02 / T-101</span>
-                  <span className="px-1.5 py-0.2 rounded text-[8px] font-bold bg-emerald-900/60 text-emerald-300">
-                    DONE
-                  </span>
-                </div>
-                <div className="text-xs font-bold text-white leading-snug">Apply Partition Tables</div>
-                <div className="mt-1 flex items-center gap-1 text-[9px] text-slate-400 font-mono">
-                  <Cpu className="w-2.5 h-2.5 text-purple-400" /> System Executor
-                </div>
-              </div>
-            </div>
+                      if (el.type === 'StartEvent') {
+                        return (
+                          <div key={el.id} className="flex flex-col items-center">
+                            <div
+                              onClick={() => handleSelect(el.id)}
+                              className={`w-14 h-14 rounded-full border-2 border-emerald-400 bg-emerald-950/60 flex items-center justify-center cursor-pointer transition-all shadow-md ${
+                                isSelected ? 'ring-4 ring-emerald-400/40 scale-105' : 'hover:scale-105'
+                              }`}
+                              title={el.label}
+                            >
+                              <Play className="w-5 h-5 text-emerald-400 fill-emerald-400 ml-0.5" />
+                            </div>
+                            <span className="text-[10px] font-mono text-emerald-300 font-semibold mt-2 text-center w-28">
+                              {el.label}
+                            </span>
+                          </div>
+                        );
+                      }
 
-            {/* Sequence Flow Connector Arrow */}
-            <div className="w-8 h-0.5 bg-slate-500 relative flex items-center justify-end">
-              <div className="w-2 h-2 border-t-2 border-r-2 border-slate-400 rotate-45 -mr-1" />
-            </div>
+                      if (el.type === 'EndEvent') {
+                        return (
+                          <div key={el.id} className="flex flex-col items-center">
+                            <div
+                              onClick={() => handleSelect(el.id)}
+                              className={`w-14 h-14 rounded-full border-4 border-purple-400 bg-purple-950/80 flex items-center justify-center cursor-pointer transition-all shadow-lg ${
+                                isSelected ? 'ring-4 ring-purple-400/40 scale-105' : 'hover:scale-105'
+                              }`}
+                              title={el.label}
+                            >
+                              <Flag className="w-5 h-5 text-purple-300 fill-purple-300" />
+                            </div>
+                            <span className="text-[10px] font-mono text-purple-300 font-semibold mt-2 text-center w-28">
+                              {el.label}
+                            </span>
+                          </div>
+                        );
+                      }
 
-            {/* 3. TASK: T-102 (B-03) */}
-            <div className="flex flex-col items-center">
-              <div
-                onClick={() => setSelectedElementId('B-03')}
-                className={`w-40 p-3 rounded-lg border-2 transition-all cursor-pointer shadow-md bg-slate-800/90 ${
-                  selectedElementId === 'B-03'
-                    ? 'border-indigo-400 ring-2 ring-indigo-500/40'
-                    : 'border-indigo-500/50 hover:border-indigo-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[9px] font-mono text-indigo-400 font-bold">B-03 / T-102</span>
-                  <span className="px-1.5 py-0.2 rounded text-[8px] font-bold bg-emerald-900/60 text-emerald-300">
-                    DONE
-                  </span>
-                </div>
-                <div className="text-xs font-bold text-white leading-snug">Build Isolation Indices</div>
-                <div className="mt-1 flex items-center gap-1 text-[9px] text-slate-400 font-mono">
-                  <Wrench className="w-2.5 h-2.5 text-blue-400" /> Tool Executor
-                </div>
-              </div>
-            </div>
+                      if (el.type === 'Gateway') {
+                        const isExclusive = el.gatewayType === 'Exclusive';
+                        return (
+                          <div key={el.id} className="flex flex-col items-center w-40">
+                            <div
+                              onClick={() => handleSelect(el.id)}
+                              className={`w-12 h-12 rotate-45 border-2 flex items-center justify-center cursor-pointer transition-all shadow-md shrink-0 ${
+                                isExclusive
+                                  ? 'border-amber-400 bg-amber-950/70'
+                                  : 'border-indigo-400 bg-indigo-950/70'
+                              } ${isSelected ? 'ring-4 ring-amber-400/40 scale-105' : 'hover:scale-105'}`}
+                              title={el.condition ? `${el.label} [${el.condition}]` : el.label}
+                            >
+                              <span
+                                className={`-rotate-45 text-sm font-bold font-mono ${
+                                  isExclusive ? 'text-amber-300' : 'text-indigo-300'
+                                }`}
+                              >
+                                {isExclusive ? '✕' : '+'}
+                              </span>
+                            </div>
+                            <span className="text-[10px] font-mono text-slate-300 font-semibold mt-2 text-center leading-snug">
+                              {el.label}
+                            </span>
+                            {el.condition && (
+                              <span className="text-[9px] font-mono text-emerald-400 bg-emerald-950 px-1 py-0.5 rounded mt-1">
+                                [{el.condition}]
+                              </span>
+                            )}
+                          </div>
+                        );
+                      }
 
-            {/* Sequence Flow Connector Arrow */}
-            <div className="w-8 h-0.5 bg-slate-500 relative flex items-center justify-end">
-              <div className="w-2 h-2 border-t-2 border-r-2 border-slate-400 rotate-45 -mr-1" />
-            </div>
+                      // Task
+                      return (
+                        <div
+                          key={el.id}
+                          onClick={() => handleSelect(el.id)}
+                          className={`w-48 p-3 rounded-lg border-2 transition-all cursor-pointer shadow-md bg-slate-800/90 ${
+                            isSelected
+                              ? 'border-indigo-400 ring-2 ring-indigo-500/40'
+                              : 'border-indigo-500/50 hover:border-indigo-400'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-1 gap-2">
+                            <span className="text-[9px] font-mono text-indigo-400 font-bold truncate">{el.id}</span>
+                            {ticket && (
+                              <span
+                                className={`px-1.5 py-0.2 rounded text-[8px] font-bold shrink-0 ${
+                                  ticket.lifecycleState === 'Completed'
+                                    ? 'bg-emerald-900/60 text-emerald-300'
+                                    : ticket.lifecycleState === 'Failed'
+                                    ? 'bg-rose-900/60 text-rose-300'
+                                    : ticket.lifecycleState === 'Created'
+                                    ? 'bg-slate-700 text-slate-300'
+                                    : 'bg-amber-900/60 text-amber-300'
+                                }`}
+                              >
+                                {ticket.lifecycleState === 'Created' ? 'READY' : ticket.lifecycleState.toUpperCase()}
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-xs font-bold text-white leading-snug">{el.label}</div>
+                          {ticket && (
+                            <div className="mt-1 flex items-center gap-1 text-[9px] font-mono">
+                              {executorBadge(ticket)}
+                            </div>
+                          )}
+                          <div className="mt-2 pt-1.5 border-t border-slate-700/60 text-[9px] font-mono text-slate-500">
+                            → {el.next.length > 0 ? el.next.join(', ') : 'TERMINAL'}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
 
-            {/* 4. GATEWAY 1: B-04 (Exclusive XOR) */}
-            <div className="flex flex-col items-center relative">
-              <div
-                onClick={() => setSelectedElementId('B-04')}
-                className={`w-12 h-12 rotate-45 border-2 border-amber-400 bg-amber-950/70 flex items-center justify-center cursor-pointer transition-all shadow-md ${
-                  selectedElementId === 'B-04' ? 'ring-4 ring-amber-400/40 scale-105' : 'hover:scale-105'
-                }`}
-                title="Exclusive Gateway: ExitCode == 0"
-              >
-                <span className="-rotate-45 text-sm font-bold text-amber-300 font-mono">✕</span>
-              </div>
-              <span className="text-[10px] font-mono text-amber-300 font-semibold mt-3 text-center w-24">
-                Indices Valid?
-              </span>
-
-              {/* Exception Branch drop down */}
-              <div className="absolute top-14 left-1/2 -translate-x-1/2 w-0.5 h-12 bg-rose-500" />
-              <div className="absolute top-26 left-1/2 -translate-x-1/2 text-[8px] font-mono text-rose-400 bg-rose-950 px-1 py-0.5 rounded whitespace-nowrap">
-                [ExitCode != 0]
-              </div>
-            </div>
-
-            {/* Sequence Flow Connector Arrow with Condition Label */}
-            <div className="w-14 h-0.5 bg-emerald-500 relative flex items-center justify-end">
-              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-[8px] font-mono text-emerald-400 bg-emerald-950 px-1 py-0.5 rounded whitespace-nowrap">
-                [ExitCode == 0]
-              </span>
-              <div className="w-2 h-2 border-t-2 border-r-2 border-emerald-400 rotate-45 -mr-1" />
-            </div>
-
-            {/* 5. TASK: T-103 (B-05) */}
-            <div className="flex flex-col items-center">
-              <div
-                onClick={() => setSelectedElementId('B-05')}
-                className={`w-40 p-3 rounded-lg border-2 transition-all cursor-pointer shadow-md bg-slate-800/90 ${
-                  selectedElementId === 'B-05'
-                    ? 'border-indigo-400 ring-2 ring-indigo-500/40'
-                    : 'border-indigo-500/50 hover:border-indigo-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[9px] font-mono text-indigo-400 font-bold">B-05 / T-103</span>
-                  <span className="px-1.5 py-0.2 rounded text-[8px] font-bold bg-amber-900/60 text-amber-300">
-                    READY
-                  </span>
-                </div>
-                <div className="text-xs font-bold text-white leading-snug">Implement PKCE Engine</div>
-                <div className="mt-1 flex items-center gap-1 text-[9px] text-slate-400 font-mono">
-                  <Bot className="w-2.5 h-2.5 text-cyan-400" /> AI Executor
-                </div>
-              </div>
-            </div>
-
-            {/* Sequence Flow Connector Arrow */}
-            <div className="w-8 h-0.5 bg-slate-500 relative flex items-center justify-end">
-              <div className="w-2 h-2 border-t-2 border-r-2 border-slate-400 rotate-45 -mr-1" />
-            </div>
-
-            {/* 6. TASK: T-104 (B-06) */}
-            <div className="flex flex-col items-center">
-              <div
-                onClick={() => setSelectedElementId('B-06')}
-                className={`w-40 p-3 rounded-lg border-2 transition-all cursor-pointer shadow-md bg-slate-800/90 ${
-                  selectedElementId === 'B-06'
-                    ? 'border-indigo-400 ring-2 ring-indigo-500/40'
-                    : 'border-indigo-500/50 hover:border-indigo-400'
-                }`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[9px] font-mono text-indigo-400 font-bold">B-06 / T-104</span>
-                  <span className="px-1.5 py-0.2 rounded text-[8px] font-bold bg-slate-700 text-slate-300">
-                    BLOCKED
-                  </span>
-                </div>
-                <div className="text-xs font-bold text-white leading-snug">Isolation Audit Tests</div>
-                <div className="mt-1 flex items-center gap-1 text-[9px] text-slate-400 font-mono">
-                  <User className="w-2.5 h-2.5 text-amber-400" /> Human Verifier (SoD)
-                </div>
-              </div>
-            </div>
-
-            {/* Sequence Flow Connector Arrow */}
-            <div className="w-8 h-0.5 bg-slate-500 relative flex items-center justify-end">
-              <div className="w-2 h-2 border-t-2 border-r-2 border-slate-400 rotate-45 -mr-1" />
-            </div>
-
-            {/* 7. GATEWAY 2: B-07 (Exclusive XOR: Tests & Proof) */}
-            <div className="flex flex-col items-center relative">
-              <div
-                onClick={() => setSelectedElementId('B-07')}
-                className={`w-12 h-12 rotate-45 border-2 border-amber-400 bg-amber-950/70 flex items-center justify-center cursor-pointer transition-all shadow-md ${
-                  selectedElementId === 'B-07' ? 'ring-4 ring-amber-400/40 scale-105' : 'hover:scale-105'
-                }`}
-                title="Exclusive Gateway: TestsPass && ProofVerified"
-              >
-                <span className="-rotate-45 text-sm font-bold text-amber-300 font-mono">✕</span>
-              </div>
-              <span className="text-[10px] font-mono text-amber-300 font-semibold mt-3 text-center w-24">
-                Proof Verified?
-              </span>
-
-              {/* Exception Branch drop down */}
-              <div className="absolute top-14 left-1/2 -translate-x-1/2 w-0.5 h-12 bg-rose-500" />
-              <div className="absolute top-26 left-1/2 -translate-x-1/2 text-[8px] font-mono text-rose-400 bg-rose-950 px-1 py-0.5 rounded whitespace-nowrap">
-                [Proof Rejected]
-              </div>
-            </div>
-
-            {/* Sequence Flow Connector Arrow with Condition Label */}
-            <div className="w-14 h-0.5 bg-emerald-500 relative flex items-center justify-end">
-              <span className="absolute -top-4 left-1/2 -translate-x-1/2 text-[8px] font-mono text-emerald-400 bg-emerald-950 px-1 py-0.5 rounded whitespace-nowrap">
-                [Proof OK]
-              </span>
-              <div className="w-2 h-2 border-t-2 border-r-2 border-emerald-400 rotate-45 -mr-1" />
-            </div>
-
-            {/* 8. END EVENT: B-END */}
-            <div className="flex flex-col items-center">
-              <div
-                onClick={() => setSelectedElementId('B-END')}
-                className={`w-14 h-14 rounded-full border-4 border-purple-400 bg-purple-950/80 flex items-center justify-center cursor-pointer transition-all shadow-lg ${
-                  selectedElementId === 'B-END' ? 'ring-4 ring-purple-400/40 scale-105' : 'hover:scale-105'
-                }`}
-                title="End Event: Terminal JSON Payload Emitted"
-              >
-                <Flag className="w-5 h-5 text-purple-300 fill-purple-300" />
-              </div>
-              <span className="text-[10px] font-mono text-purple-300 font-semibold mt-2 text-center w-24">
-                End: Terminal JSON
-              </span>
+                  {colIdx < columns.length - 1 && (
+                    <div className="flex items-center self-center text-slate-500 pt-2">
+                      <ArrowRight className="w-5 h-5" />
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
             </div>
           </div>
-
-          {/* EXCEPTION & TROUBLESHOOTING RE-ENTRY LOOP (B-ERR) */}
-          <div className="mt-16 pt-4 border-t border-slate-800/80 w-full flex items-center justify-center gap-6">
-            <div className="flex items-center gap-3 bg-rose-950/30 p-3 rounded-xl border border-rose-800/50">
-              <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-rose-300 font-mono">B-ERR: Exception Boundary</span>
-                  <span className="text-[9px] bg-rose-900/60 text-rose-300 px-1.5 py-0.2 rounded font-mono">
-                    ERROR PATH
-                  </span>
-                </div>
-                <div className="text-[11px] text-slate-300 mt-0.5">
-                  Catches exit code non-zero or proof rejection → Spawns Troubleshooting Ticket → Re-enters pipeline at B-02
-                </div>
-              </div>
-              <div className="flex items-center gap-1 text-xs font-mono text-amber-400 bg-amber-950/60 px-2.5 py-1.5 rounded-lg border border-amber-800 ml-4">
-                <RotateCcw className="w-3.5 h-3.5 animate-spin" />
-                Pipeline Re-entry
-              </div>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Selected Element Inspector Footer */}
-      {selectedElementId && (
+      {selectedElement && (
         <div className="px-5 py-3 bg-slate-950 border-t border-slate-800 text-xs flex items-center justify-between">
           <div className="flex items-center gap-3">
             <span className="text-slate-400">Selected BPMN Element:</span>
             <span className="font-mono font-bold text-purple-400 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800">
-              {selectedElementId}
+              {selectedElement.id}
             </span>
-            <span className="text-slate-300">
-              {bpmnElements.find((b) => b.id === selectedElementId)?.label}
-            </span>
-            {bpmnElements.find((b) => b.id === selectedElementId)?.condition && (
+            <span className="text-slate-300">{selectedElement.label}</span>
+            {selectedElement.condition && (
               <span className="text-emerald-400 font-mono text-[11px]">
-                Condition: {bpmnElements.find((b) => b.id === selectedElementId)?.condition}
+                Condition: {selectedElement.condition}
               </span>
             )}
           </div>
