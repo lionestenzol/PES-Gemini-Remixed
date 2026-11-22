@@ -798,6 +798,14 @@ export class PesV2Engine {
         'INTAKE',
         `Packaged ${this.tickets.length} ticket(s) from derived list item(s)`
       );
+
+      this.dependencyNodes = this.deriveDependencyNodes(this.tickets);
+      const readyCount = this.dependencyNodes.filter((d) => !d.isBlocked).length;
+      this.addTelemetryLog(
+        'DEPENDENCY_GRAPH_DERIVED',
+        'INTAKE',
+        `Built dependency graph for ${this.dependencyNodes.length} ticket(s); ${readyCount} ready, ${this.dependencyNodes.length - readyCount} blocked`
+      );
     }
 
     return record;
@@ -932,6 +940,34 @@ export class PesV2Engine {
         lifecycleState: 'Created',
         telemetry: [`[${new Date().toLocaleTimeString()}] Ticket packaged from derived list item ${item.id}`],
         createdAt: new Date().toISOString(),
+      };
+    });
+  }
+
+  private deriveDependencyNodes(tickets: V2Ticket[]): V2DependencyNode[] {
+    if (tickets.length === 0) return [];
+
+    const groupTitleByType = new Map(this.STRUCTURAL_GROUPS.map((group) => [group.type, group.title]));
+
+    const unlocksById = new Map<string, string[]>(tickets.map((t) => [t.id, []]));
+    tickets.forEach((t) => {
+      t.dependencies.forEach((depId) => {
+        unlocksById.get(depId)?.push(t.id);
+      });
+    });
+
+    return tickets.map((t) => {
+      const sourceItem = this.listItems.find((item) => item.id === t.id);
+      return {
+        id: t.id,
+        title: t.title,
+        prerequisites: t.dependencies,
+        unlocks: unlocksById.get(t.id) ?? [],
+        isBlocked: t.dependencies.some((depId) => {
+          const dep = tickets.find((x) => x.id === depId);
+          return dep?.lifecycleState !== 'Completed';
+        }),
+        parallelGroup: sourceItem ? groupTitleByType.get(sourceItem.type) : undefined,
       };
     });
   }
